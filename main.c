@@ -987,10 +987,26 @@ static void mouse_movement_send(int16_t x_delta, int16_t y_delta)
                                          INPUT_REP_MOVEMENT_INDEX,
                                          INPUT_REP_MOVEMENT_LEN,
                                          buffer);
-    }
 
-// Sending mouse action value through service character we made
-    our_characteristics_update(&m_our_service, &x_delta, &y_delta);
+        // Sending mouse action value through service character we made
+//        our_characteristics_update(&m_our_service, &x_delta, &y_delta);
+        int32_t temperature = 0;    // Declare variable holding temperature value
+        //static int32_t previous_temperature = 0; // Declare a variable to store current temperature until next measurement.
+    
+        sd_temp_get(&temperature); // Get temperature
+    
+        // Check if current temperature is different from last temperature
+        /* if(temperature != previous_temperature)
+        {
+        // If new temperature then send notification
+            our_temperature_characteristic_update(&m_our_service, &temperature);
+        }*/
+    
+        our_temperature_characteristic_update(&m_our_service, &temperature);
+        // Save current temperature until next measurement
+        //previous_temperature = temperature;
+        nrf_gpio_pin_toggle(LED_4);
+    }
 
     if ((err_code != NRF_SUCCESS) &&
         (err_code != NRF_ERROR_INVALID_STATE) &&
@@ -1000,6 +1016,7 @@ static void mouse_movement_send(int16_t x_delta, int16_t y_delta)
     {
         APP_ERROR_HANDLER(err_code);
     }
+
 }
 
 

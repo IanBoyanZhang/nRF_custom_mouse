@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <string.h>
 #include "nrf_gpio.h"
+#include "bsp.h"
+#include "bsp_btn_ble.h"
 #include "our_service.h"
 #include "ble_srv_common.h"
 #include "app_error.h"
@@ -38,6 +40,7 @@ static void on_ble_write(ble_os_t * p_our_service, ble_evt_t * p_ble_evt)
     {
         mouse_speed = 8;
         // Get data
+        nrf_gpio_pin_toggle(LED_2);
         sd_ble_gatts_value_get(p_our_service->conn_handle, p_our_service->char_handles.value_handle, &rx_data);
         // Print handle and value 
         // printf("Value received on handle %#06x: %#010x\r\n", p_ble_evt->evt.gatts_evt.params.write.handle, data_buffer);
@@ -183,7 +186,7 @@ void our_service_init(ble_os_t * p_our_service)
 }
 
 // ALREADY_DONE_FOR_YOU: Function to be called when updating characteristic value
-void our_termperature_characteristic_update(ble_os_t *p_our_service, int32_t *temperature_value)
+void our_temperature_characteristic_update(ble_os_t *p_our_service, int32_t *temperature_value)
 {
     // OUR_JOB: Step 3.E, Update characteristic value
     if (p_our_service->conn_handle != BLE_CONN_HANDLE_INVALID)
@@ -221,6 +224,8 @@ void our_characteristics_update(ble_os_t *p_our_service,
         hvx_params.offset = 0;
         hvx_params.p_len  = &len;
         hvx_params.p_data = (uint8_t*)mouse_action_value;
+
+        sd_ble_gatts_hvx(p_our_service->conn_handle, &hvx_params);
     }
   
 }
