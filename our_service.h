@@ -56,9 +56,6 @@ void our_temperature_characteristic_update(ble_os_t *p_our_service, int32_t *tem
  * @param[in]   p_our_service                     Our Service structure.
  * @param[in]   characteristic_value              New characteristic value.
  */
-void our_characteristics_update(ble_os_t *p_our_service, 
-                                int16_t *mouse_action_value_left,
-                                int16_t *mouse_action_value_right);
-
+void our_characteristics_update(ble_os_t *p_our_service, int16_t *mouse_action_value);
 
 #endif  /* _ OUR_SERVICE_H__ */

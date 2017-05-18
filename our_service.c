@@ -205,12 +205,8 @@ void our_temperature_characteristic_update(ble_os_t *p_our_service, int32_t *tem
     }   
 }
 
-void our_characteristics_update(ble_os_t *p_our_service, 
-                                int16_t *mouse_action_value_left,
-                                int16_t *mouse_action_value_right)
+void our_characteristics_update(ble_os_t *p_our_service, int16_t *mouse_action_value)
 {
-    // Byte concatenation
-    int32_t mouse_action_value = (*(mouse_action_value_left) << 16) + *mouse_action_value_right;
 
     // OUR_JOB: Step 3.E, Update characteristic value
     if (p_our_service->conn_handle != BLE_CONN_HANDLE_INVALID)

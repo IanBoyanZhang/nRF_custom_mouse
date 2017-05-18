@@ -989,22 +989,10 @@ static void mouse_movement_send(int16_t x_delta, int16_t y_delta)
                                          buffer);
 
         // Sending mouse action value through service character we made
-//        our_characteristics_update(&m_our_service, &x_delta, &y_delta);
-        int32_t temperature = 0;    // Declare variable holding temperature value
-        //static int32_t previous_temperature = 0; // Declare a variable to store current temperature until next measurement.
+        // Sending payload hrough gatt service
+        our_characteristics_update(&m_our_service, &x_delta);
     
-        sd_temp_get(&temperature); // Get temperature
-    
-        // Check if current temperature is different from last temperature
-        /* if(temperature != previous_temperature)
-        {
-        // If new temperature then send notification
-            our_temperature_characteristic_update(&m_our_service, &temperature);
-        }*/
-    
-        our_temperature_characteristic_update(&m_our_service, &temperature);
         // Save current temperature until next measurement
-        //previous_temperature = temperature;
         nrf_gpio_pin_toggle(LED_4);
     }
 
