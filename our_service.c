@@ -32,21 +32,21 @@ static void on_ble_write(ble_os_t * p_our_service, ble_evt_t * p_ble_evt)
         // Get data
         sd_ble_gatts_value_get(p_our_service->conn_handle, p_our_service->char_handles.value_handle, &rx_data);
         // Print handle and value 
-        // printf("Value received on handle %#06x: %#010x\r\n", p_ble_evt->evt.gatts_evt.params.write.handle, data_buffer);
+        //printf("Value received on handle %#06x: %#010x\r\n", p_ble_evt->evt.gatts_evt.params.write.handle, data_buffer);
     }
     else if(p_ble_evt->evt.gatts_evt.params.write.handle == p_our_service->char_handles.cccd_handle)
     {
         // Get data
         sd_ble_gatts_value_get(p_our_service->conn_handle, p_our_service->char_handles.cccd_handle, &rx_data);
         // Print handle and value 
-        // printf("Value received on handle %#06x: %#06x\r\n", p_ble_evt->evt.gatts_evt.params.write.handle, data_buffer);
+        //printf("Value received on handle %#06x: %#06x\r\n", p_ble_evt->evt.gatts_evt.params.write.handle, data_buffer);
         if(data_buffer == 0x0001)
         {
-            printf("Notification enabled\r\n");
+            //printf("Notification enabled\r\n");
         }
         else if(data_buffer == 0x0000)
         {
-            printf("Notification disabled\r\n");
+            //printf("Notification disabled\r\n");
         }
     }
 }
@@ -136,9 +136,9 @@ static uint32_t our_char_add(ble_os_t * p_our_service)
                                        &p_our_service->char_handles);
     APP_ERROR_CHECK(err_code);
     
-    printf("\r\nService handle: %#x\n\r", p_our_service->service_handle);
-    printf("Char value handle: %#x\r\n", p_our_service->char_handles.value_handle);
-    printf("Char cccd handle: %#x\r\n\r\n", p_our_service->char_handles.cccd_handle);
+    //printf("\r\nService handle: %#x\n\r", p_our_service->service_handle);
+    //printf("Char value handle: %#x\r\n", p_our_service->char_handles.value_handle);
+    //printf("Char cccd handle: %#x\r\n\r\n", p_our_service->char_handles.cccd_handle);
 
     return NRF_SUCCESS;
 }
@@ -175,7 +175,7 @@ void our_service_init(ble_os_t * p_our_service)
 }
 
 // ALREADY_DONE_FOR_YOU: Function to be called when updating characteristic value
-void our_termperature_characteristic_update(ble_os_t *p_our_service, int32_t *temperature_value)
+void our_temperature_characteristic_update(ble_os_t *p_our_service, int32_t *temperature_value)
 {
     // OUR_JOB: Step 3.E, Update characteristic value
     if (p_our_service->conn_handle != BLE_CONN_HANDLE_INVALID)
@@ -192,27 +192,4 @@ void our_termperature_characteristic_update(ble_os_t *p_our_service, int32_t *te
 
         sd_ble_gatts_hvx(p_our_service->conn_handle, &hvx_params);
     }   
-}
-
-void our_characteristics_update(ble_os_t *p_our_service, 
-                                int16_t *mouse_action_value_left,
-                                int16_t *mouse_action_value_right)
-{
-    // Byte concatenation
-    int32_t mouse_action_value = (*(mouse_action_value_left) << 16) + *mouse_action_value_right;
-
-    // OUR_JOB: Step 3.E, Update characteristic value
-    if (p_our_service->conn_handle != BLE_CONN_HANDLE_INVALID)
-    {
-        uint16_t      len = 4;
-        ble_gatts_hvx_params_t hvx_params;
-        memset(&hvx_params, 0, sizeof(hvx_params));
-
-        hvx_params.handle = p_our_service->char_handles.value_handle;
-        hvx_params.type   = BLE_GATT_HVX_NOTIFICATION;
-        hvx_params.offset = 0;
-        hvx_params.p_len  = &len;
-        hvx_params.p_data = (uint8_t*)mouse_action_value;
-    }
-  
 }

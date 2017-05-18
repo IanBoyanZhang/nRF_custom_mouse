@@ -47,17 +47,6 @@ void our_service_init(ble_os_t * p_our_service);
  * @param[in]   p_our_service                     Our Service structure.
  * @param[in]   characteristic_value     New characteristic value.
  */
-void our_termperature_characteristic_update(ble_os_t *p_our_service, int32_t *temperature_value);
-
-/**@brief Function for updating and sending new characteristic values
- *
- * @details The application calls this function whenever mouse_movement_send
- *
- * @param[in]   p_our_service                     Our Service structure.
- * @param[in]   characteristic_value              New characteristic value.
- */
-void our_characteristics_update(ble_os_t *p_our_service, 
-                                int16_t *mouse_action_value_left,
-                                int16_t *mouse_action_value_right);
+void our_temperature_characteristic_update(ble_os_t *p_our_service, int32_t *temperature_value);
 
 #endif  /* _ OUR_SERVICE_H__ */
