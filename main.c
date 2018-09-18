@@ -54,6 +54,8 @@
 #include "ble_advertising.h"
 #include "our_service.h"
 #include "SEGGER_RTT.h"
+#include "peer_manager.h"
+#include "peer_manager_handler.h"
 
 #if BUTTONS_NUMBER < 4
 #error "Not enough resources on board to run example"
@@ -151,6 +153,8 @@ static dm_handle_t                      m_bonded_peer_handle;                   
 
 static ble_uuid_t m_adv_uuids[] = {{BLE_UUID_HUMAN_INTERFACE_DEVICE_SERVICE, BLE_UUID_TYPE_BLE}}; /**< Universally unique service identifiers. */
 
+// Flag used to identify bonds that should be deleted
+static ble_conn_state_user_flag_id_t m_mouse_bonds_to_delete;
 
 static void on_hids_evt(ble_hids_t * p_hids, ble_hids_evt_t * p_evt);
 
@@ -193,314 +197,106 @@ static void service_error_handler(uint32_t nrf_error)
  *
  * @param[in] nrf_error  Error code containing information about what went wrong.
  */
-static void ble_advertising_error_handler(uint32_t nrf_error)
-{
-    APP_ERROR_HANDLER(nrf_error);
-}
+static void ble_advertising_err
 
 
-/**@brief Function for performing a battery measurement, and update the Battery Level characteristic in the Battery Service.
+/**@brief Function for deleting a single bond if it does not belong to a connected peer.
+ *
+ * This will mark the bond for deferred deletion if the peer is connected.
  */
-static void battery_level_update(void)
+static void bond_delete(uint16_t conn_handle, void * p_context)
 {
-    uint32_t err_code;
-    uint8_t  battery_level;
+    UNUSED_PARAMETER(p_context);
+    ret_code_t   err_code;
+    pm_peer_id_t peer_id;
 
-    battery_level = (uint8_t)sensorsim_measure(&m_battery_sim_state, &m_battery_sim_cfg);
-
-    err_code = ble_bas_battery_level_update(&m_bas, battery_level);
-    if ((err_code != NRF_SUCCESS) &&
-        (err_code != NRF_ERROR_INVALID_STATE) &&
-        (err_code != BLE_ERROR_NO_TX_PACKETS) &&
-        (err_code != BLE_ERROR_GATTS_SYS_ATTR_MISSING)
-    )
+    if (ble_conn_state_status(conn_handle) == BLE_CONN_STATUS_CONNECTED)
     {
-        APP_ERROR_HANDLER(err_code);
+        ble_conn_state_user_flag_set(conn_handle, m_bms_bonds_to_delete, true);
+    }
+    else
+    {
+        NRF_LOG_DEBUG("Attempting to delete bond.");
+        err_code = pm_peer_id_get(conn_handle, &peer_id);
+        if (err_code == NRF_SUCCESS)
+        {
+            err_code = pm_peer_delete(peer_id);
+            APP_ERROR_CHECK(err_code);
+            ble_conn_state_user_flag_set(conn_handle, m_bms_bonds_to_delete, false);
+        }
     }
 }
 
 
-/**@brief Function for handling the Battery measurement timer timeout.
- *
- * @details This function will be called each time the battery level measurement timer expires.
- *
- * @param[in]   p_context   Pointer used for passing some arbitrary information (context) from the
- *                          app_start_timer() call to the timeout handler.
- */
-static void battery_level_meas_timeout_handler(void * p_context)
+/**@brief Function for performing deferred deletions.
+*/
+static void delete_disconnected_bonds(void)
 {
-    UNUSED_PARAMETER(p_context);
-    battery_level_update();
+    uint32_t n_calls = ble_conn_state_for_each_set_user_flag(m_bms_bonds_to_delete, bond_delete, NULL);
+    UNUSED_RETURN_VALUE(n_calls);
 }
 
 
-/**@brief Function for the Timer initialization.
- *
- * @details Initializes the timer module.
- */
-static void timers_init(void)
+/**@brief Function for marking the requester's bond for deletion.
+*/
+static void delete_requesting_bond(nrf_ble_bms_t const * p_bms)
 {
-    uint32_t err_code;
-
-    // Initialize timer module, making it use the scheduler.
-    APP_TIMER_APPSH_INIT(APP_TIMER_PRESCALER, APP_TIMER_OP_QUEUE_SIZE, true);
-
-    // Create battery timer.
-    err_code = app_timer_create(&m_battery_timer_id,
-                                APP_TIMER_MODE_REPEATED,
-                                battery_level_meas_timeout_handler);
-    APP_ERROR_CHECK(err_code);
+    NRF_LOG_INFO("Client requested that bond to current device deleted");
+    ble_conn_state_user_flag_set(p_bms->conn_handle, m_bms_bonds_to_delete, true);
 }
 
 
-/**@brief Function for the GAP initialization.
- *
- * @details This function sets up all the necessary GAP (Generic Access Profile) parameters of the
- *          device including the device name, appearance, and the preferred connection parameters.
- */
-static void gap_params_init(void)
+/**@brief Function for deleting all bonds
+*/
+static void delete_all_bonds(nrf_ble_bms_t const * p_bms)
 {
-    uint32_t                err_code;
-    ble_gap_conn_params_t   gap_conn_params;
-    ble_gap_conn_sec_mode_t sec_mode;
+    ret_code_t err_code;
+    uint16_t conn_handle;
 
-    BLE_GAP_CONN_SEC_MODE_SET_OPEN(&sec_mode);
+    NRF_LOG_INFO("Client requested that all bonds be deleted");
 
-    err_code = sd_ble_gap_device_name_set(&sec_mode,
-                                          (const uint8_t *)DEVICE_NAME,
-                                          strlen(DEVICE_NAME));
-    APP_ERROR_CHECK(err_code);
-
-    err_code = sd_ble_gap_appearance_set(BLE_APPEARANCE_HID_MOUSE);
-    APP_ERROR_CHECK(err_code);
-
-    memset(&gap_conn_params, 0, sizeof(gap_conn_params));
-
-    gap_conn_params.min_conn_interval = MIN_CONN_INTERVAL;
-    gap_conn_params.max_conn_interval = MAX_CONN_INTERVAL;
-    gap_conn_params.slave_latency     = SLAVE_LATENCY;
-    gap_conn_params.conn_sup_timeout  = CONN_SUP_TIMEOUT;
-
-    err_code = sd_ble_gap_ppcp_set(&gap_conn_params);
-    APP_ERROR_CHECK(err_code);
-}
-
-
-/**@brief Function for initializing Device Information Service.
- */
-static void dis_init(void)
-{
-    uint32_t         err_code;
-    ble_dis_init_t   dis_init_obj;
-    ble_dis_pnp_id_t pnp_id;
-
-    pnp_id.vendor_id_source = PNP_ID_VENDOR_ID_SOURCE;
-    pnp_id.vendor_id        = PNP_ID_VENDOR_ID;
-    pnp_id.product_id       = PNP_ID_PRODUCT_ID;
-    pnp_id.product_version  = PNP_ID_PRODUCT_VERSION;
-
-    memset(&dis_init_obj, 0, sizeof(dis_init_obj));
-
-    ble_srv_ascii_to_utf8(&dis_init_obj.manufact_name_str, MANUFACTURER_NAME);
-    dis_init_obj.p_pnp_id = &pnp_id;
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&dis_init_obj.dis_attr_md.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&dis_init_obj.dis_attr_md.write_perm);
-
-    err_code = ble_dis_init(&dis_init_obj);
-    APP_ERROR_CHECK(err_code);
-}
-
-/**@brief Function for initializing Battery Service.
- */
-static void bas_init(void)
-{
-    uint32_t       err_code;
-    ble_bas_init_t bas_init_obj;
-
-    memset(&bas_init_obj, 0, sizeof(bas_init_obj));
-
-    bas_init_obj.evt_handler          = NULL;
-    bas_init_obj.support_notification = true;
-    bas_init_obj.p_report_ref         = NULL;
-    bas_init_obj.initial_batt_level   = 100;
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&bas_init_obj.battery_level_char_attr_md.cccd_write_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&bas_init_obj.battery_level_char_attr_md.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&bas_init_obj.battery_level_char_attr_md.write_perm);
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&bas_init_obj.battery_level_report_read_perm);
-
-    err_code = ble_bas_init(&m_bas, &bas_init_obj);
-    APP_ERROR_CHECK(err_code);
-}
-
-
-/**@brief Function for initializing HID Service.
- */
-static void hids_init(void)
-{
-    uint32_t                  err_code;
-    ble_hids_init_t           hids_init_obj;
-    ble_hids_inp_rep_init_t   inp_rep_array[INPUT_REPORT_COUNT];
-    ble_hids_inp_rep_init_t * p_input_report;
-    uint8_t                   hid_info_flags;
-
-    static uint8_t rep_map_data[] =
+    pm_peer_id_t peer_id = pm_next_peer_id_get(PM_PEER_ID_INVALID);
+    while (peer_id != PM_PEER_ID_INVALID)
     {
-        0x05, 0x01,                     // Usage Page (Generic Desktop)
-        0x09, 0x02,                     // Usage (Mouse)
+        err_code = pm_conn_handle_get(peer_id, &conn_handle);
+        APP_ERROR_CHECK(err_code);
 
-        0xA1, 0x01,                     // Collection (Application)
+        bond_delete(conn_handle, NULL);
 
-        // Report ID 1: Mouse buttons + scroll/pan
-        0x85, 0x01,       //     Report Id 1
-        0x09, 0x01,       //     Usage (Pointer)
-        0xA1, 0x00,       //     Collection (Physical)
-        0x95, 0x05,       //         Report Count (3)
-        0x75, 0x01,       //         Report Size (1)
-        0x05, 0x09,       //         Usage Page (Buttons)
-        0x19, 0x01,       //             Usage Minimum (01)
-        0x29, 0x05,       //             Usage Maximum (05)
-        0x15, 0x00,       //             Logical Minimum (0)
-        0x25, 0x01,       //             Logical Maximum (1)
-        0x81, 0x02,       //             Input (Data, Variable, Absolute)
-        0x95, 0x01,       //             Report Count (1)
-        0x75, 0x03,       //             Report Size (3)
-        0x81, 0x01,       //             Input (Constant) for padding
-        0x75, 0x08,       //             Report Size (8)
-        0x95, 0x01,       //             Report Count (1)
-        0x05, 0x01,       //         Usage Page (Generic Desktop)
-        0x09, 0x38,       //             Usage (Wheel)
-        0x15, 0x81,       //             Logical Minimum (-127)
-        0x25, 0x7F,       //             Logical Maximum (127)
-        0x81, 0x06,       //             Input (Data, Variable, Relative)
-        0x05, 0x0C,       //         Usage Page (Consumer)
-        0x0A, 0x38, 0x02, //             Usage (AC Pan)
-        0x95, 0x01,       //             Report Count (1)
-        0x81, 0x06,       //             Input (Data,Value,Relative,Bit Field)
-        0xC0,             //     End Collection (Physical)
-
-        // Report ID 2: Mouse motion
-        0x85, 0x02,       //     Report Id 2
-        0x09, 0x01,       //     Usage (Pointer)
-        0xA1, 0x00,       //     Collection (Physical)
-        0x75, 0x0C,       //         Report Size (12)
-        0x95, 0x02,       //         Report Count (2)
-        0x05, 0x01,       //         Usage Page (Generic Desktop)
-        0x09, 0x30,       //             Usage (X)
-        0x09, 0x31,       //             Usage (Y)
-        0x16, 0x01, 0xF8, //             Logical maximum (2047)
-        0x26, 0xFF, 0x07, //             Logical minimum (-2047)
-        0x81, 0x06,       //             Input (Data, Variable, Relative)
-        0xC0,             //     End Collection (Physical)
-        0xC0,             // End Collection (Application)
-
-        // Report ID 3: Advanced buttons
-        0x05, 0x0C,       // Usage Page (Consumer)
-        0x09, 0x01,       // Usage (Consumer Control)
-        0xA1, 0x01,       // Collection (Application)
-        0x85, 0x03,       //     Report Id (3)
-        0x15, 0x00,       //     Logical minimum (0)
-        0x25, 0x01,       //     Logical maximum (1)
-        0x75, 0x01,       //     Report Size (1)
-        0x95, 0x01,       //     Report Count (1)
-
-        0x09, 0xCD,       //     Usage (Play/Pause)
-        0x81, 0x06,       //     Input (Data,Value,Relative,Bit Field)
-        0x0A, 0x83, 0x01, //     Usage (AL Consumer Control Configuration)
-        0x81, 0x06,       //     Input (Data,Value,Relative,Bit Field)
-        0x09, 0xB5,       //     Usage (Scan Next Track)
-        0x81, 0x06,       //     Input (Data,Value,Relative,Bit Field)
-        0x09, 0xB6,       //     Usage (Scan Previous Track)
-        0x81, 0x06,       //     Input (Data,Value,Relative,Bit Field)
-
-        0x09, 0xEA,       //     Usage (Volume Down)
-        0x81, 0x06,       //     Input (Data,Value,Relative,Bit Field)
-        0x09, 0xE9,       //     Usage (Volume Up)
-        0x81, 0x06,       //     Input (Data,Value,Relative,Bit Field)
-        0x0A, 0x25, 0x02, //     Usage (AC Forward)
-        0x81, 0x06,       //     Input (Data,Value,Relative,Bit Field)
-        0x0A, 0x24, 0x02, //     Usage (AC Back)
-        0x81, 0x06,       //     Input (Data,Value,Relative,Bit Field)
-        0xC0              // End Collection
-    };
-
-    memset(inp_rep_array, 0, sizeof(inp_rep_array));
-    // Initialize HID Service.
-    p_input_report                      = &inp_rep_array[INPUT_REP_BUTTONS_INDEX];
-    p_input_report->max_len             = INPUT_REP_BUTTONS_LEN;
-    p_input_report->rep_ref.report_id   = INPUT_REP_REF_BUTTONS_ID;
-    p_input_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_INPUT;
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.cccd_write_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.write_perm);
-
-    p_input_report                      = &inp_rep_array[INPUT_REP_MOVEMENT_INDEX];
-    p_input_report->max_len             = INPUT_REP_MOVEMENT_LEN;
-    p_input_report->rep_ref.report_id   = INPUT_REP_REF_MOVEMENT_ID;
-    p_input_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_INPUT;
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.cccd_write_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.write_perm);
-
-    p_input_report                      = &inp_rep_array[INPUT_REP_MPLAYER_INDEX];
-    p_input_report->max_len             = INPUT_REP_MEDIA_PLAYER_LEN;
-    p_input_report->rep_ref.report_id   = INPUT_REP_REF_MPLAYER_ID;
-    p_input_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_INPUT;
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.cccd_write_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.write_perm);
-
-    hid_info_flags = HID_INFO_FLAG_REMOTE_WAKE_MSK | HID_INFO_FLAG_NORMALLY_CONNECTABLE_MSK;
-
-    memset(&hids_init_obj, 0, sizeof(hids_init_obj));
-
-    hids_init_obj.evt_handler                    = on_hids_evt;
-    hids_init_obj.error_handler                  = service_error_handler;
-    hids_init_obj.is_kb                          = false;
-    hids_init_obj.is_mouse                       = true;
-    hids_init_obj.inp_rep_count                  = INPUT_REPORT_COUNT;
-    hids_init_obj.p_inp_rep_array                = inp_rep_array;
-    hids_init_obj.outp_rep_count                 = 0;
-    hids_init_obj.p_outp_rep_array               = NULL;
-    hids_init_obj.feature_rep_count              = 0;
-    hids_init_obj.p_feature_rep_array            = NULL;
-    hids_init_obj.rep_map.data_len               = sizeof(rep_map_data);
-    hids_init_obj.rep_map.p_data                 = rep_map_data;
-    hids_init_obj.hid_information.bcd_hid        = BASE_USB_HID_SPEC_VERSION;
-    hids_init_obj.hid_information.b_country_code = 0;
-    hids_init_obj.hid_information.flags          = hid_info_flags;
-    hids_init_obj.included_services_count        = 0;
-    hids_init_obj.p_included_services_array      = NULL;
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.rep_map.security_mode.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&hids_init_obj.rep_map.security_mode.write_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.hid_information.security_mode.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&hids_init_obj.hid_information.security_mode.write_perm);
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
-        &hids_init_obj.security_mode_boot_mouse_inp_rep.cccd_write_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
-        &hids_init_obj.security_mode_boot_mouse_inp_rep.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
-        &hids_init_obj.security_mode_boot_mouse_inp_rep.write_perm);
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_protocol.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_protocol.write_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&hids_init_obj.security_mode_ctrl_point.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_ctrl_point.write_perm);
-
-    err_code = ble_hids_init(&m_hids, &hids_init_obj);
-    APP_ERROR_CHECK(err_code);
+        peer_id = pm_next_peer_id_get(peer_id);
+    }
 }
 
 
-/**@brief Function for initializing services that will be used by the application.
- */
+/**@brief Function for deleting all bet requesting device bonds
+*/
+static void delete_all_except_requesting_bond(nrf_ble_bms_t const * p_bms)
+{
+    ret_code_t err_code;
+    uint16_t conn_handle;
+
+    NRF_LOG_INFO("Client requested that all bonds except current bond be deleted");
+
+    pm_peer_id_t peer_id = pm_next_peer_id_get(PM_PEER_ID_INVALID);
+    while (peer_id != PM_PEER_ID_INVALID)
+    {
+        err_code = pm_conn_handle_get(peer_id, &conn_handle);
+        APP_ERROR_CHECK(err_code);
+
+        /* Do nothing if this is our own bond. */
+        if (conn_handle != p_bms->conn_handle)
+        {
+            bond_delete(conn_handle, NULL);
+        }
+
+        peer_id = pm_next_peer_id_get(peer_id);
+    }
+}
+
+
+
+
+
 static void services_init(void)
 {
     dis_init();
@@ -786,6 +582,8 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
             err_code = bsp_indication_set(BSP_INDICATE_IDLE);
             APP_ERROR_CHECK(err_code);
 
+            delete_disconnected_bonds();
+
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
 
             break;
@@ -905,6 +703,59 @@ static void ble_stack_init(void)
 
     // Register with the SoftDevice handler module for BLE events.
     err_code = softdevice_sys_evt_handler_set(sys_evt_dispatch);
+    APP_ERROR_CHECK(err_code);
+}
+
+/**@brief Function for handling Peer Manager events.
+ *
+ * @param[in] p_evt  Peer Manager event.
+ */
+static void pm_evt_handler(pm_evt_t const * p_evt)
+{
+    pm_handler_on_pm_evt(p_evt);
+    pm_handler_flash_clean(p_evt);
+
+    switch (p_evt->evt_id)
+    {
+        case PM_EVT_PEERS_DELETE_SUCCEEDED:
+            advertising_start(false);
+            break;
+
+        default:
+            break;
+    }
+}
+
+/**@brief Function for the Peer Manager initialization
+ */
+static void peer_manager_init(void)
+{
+    ble_gap_sec_params_t sec_param;
+    ret_code_t err_code;
+
+    err_code = pm_init();
+    APP_ERROR_CHECK(err_code);
+
+    memset(&sec_param, 0, sizeof(ble_gap_sec_params_t));
+
+    // Security parameters to be used for all security procedures.
+    sec_param.bond           = SEC_PARAM_BOND;
+    sec_param.mitm           = SEC_PARAM_MITM;
+    sec_param.lesc           = SEC_PARAM_LESC;
+    sec_param.keypress       = SEC_PARAM_KEYPRESS;
+    sec_param.io_caps        = SEC_PARAM_IO_CAPABILITIES;
+    sec_param.oob            = SEC_PARAM_OOB;
+    sec_param.min_key_size   = SEC_PARAM_MIN_KEY_SIZE;
+    sec_param.max_key_size   = SEC_PARAM_MAX_KEY_SIZE;
+    sec_param.kdist_own.enc  = 1;
+    sec_param.kdist_own.id   = 1;
+    sec_param.kdist_peer.enc = 1;
+    sec_param.kdist_peer.id  = 1;
+
+    err_code = pm_sec_params_set(&sec_param);
+    APP_ERROR_CHECK(err_code);
+
+    err_code = pm_register(pm_evt_handler);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -1176,6 +1027,24 @@ static void power_manage(void)
     APP_ERROR_CHECK(err_code);
 }
 
+/**@brief Function for starting advertising.
+ */
+static void advertising_start(bool erase_bonds)
+{
+    if (erase_bonds == true)
+    {
+        delete_bonds();
+        // Advertising is started by PM_EVT_PEER_SUCCEEDED event
+    }
+    else
+    {
+        uint32_t ret;
+
+        ret = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
+        APP_ERROR_CHECK(ret);
+    }
+}
+
 
 /**@brief Function for application main entry.
  */
@@ -1196,10 +1065,12 @@ int main(void)
     services_init();
     sensor_simulator_init();
     conn_params_init();
+    peer_manager_init();
 
     // Start execution.
     timers_start();
-    err_code = ble_advertising_start(BLE_ADV_MODE_FAST);
+
+    advertising_start(erase_bonds);
     APP_ERROR_CHECK(err_code);
 
     // debugging output
